@@ -1,0 +1,93 @@
+:root {
+  color-scheme: light;
+  font-family: ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f4f1ea;
+  color: #2b2b2b;
+}
+
+#root {
+  min-height: 100vh;
+  padding: 1rem;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  width: min(100%, 34rem);
+  margin: 0 auto;
+}
+
+.app__title {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.app__status {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.app__fen {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #c9b89a;
+  border-radius: 0.4rem;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 0.8rem;
+}
+
+.app__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.app__label {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.app__current {
+  padding: 0.5rem;
+  border-radius: 0.4rem;
+  background: #e8e2d4;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.app__problem {
+  margin: 0;
+  color: #8c3b12;
+  font-size: 0.85rem;
+}
+
+.button {
+  padding: 0.45rem 0.8rem;
+  border: 1px solid #b9a686;
+  border-radius: 0.4rem;
+  background: #fbf8f1;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: #efe7d6;
+}

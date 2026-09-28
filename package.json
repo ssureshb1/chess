@@ -1,0 +1,50 @@
+{
+  "name": "chunk-chess",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A pattern-recognition trainer for one 6-year-old chess player.",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "import:puzzles": "tsx scripts/import-puzzles.ts",
+    "build:sets": "tsx scripts/build-sets.ts",
+    "verify:sets": "tsx scripts/verify-sets.ts",
+    "analyze:games": "tsx scripts/analyze-games.ts"
+  },
+  "dependencies": {
+    "chess.js": "^1.4.0",
+    "idb": "^8.0.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "stockfish": "^18.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "eslint": "^9.39.0",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "globals": "^16.5.0",
+    "tsx": "^4.20.7",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vite": "^7.2.2",
+    "vitest": "^3.2.4"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "stockfish@18.0.8": true
+  }
+}

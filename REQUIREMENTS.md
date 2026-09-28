@@ -337,7 +337,10 @@ multi-user, and no sync** are needed — remove them from scope permanently.
   custom SVG/DOM board (a custom board gives us the highlight/glyph layer
   needed for the `tell` visualisation, which no off-the-shelf board supports).
   Piece set is fixed to **Cburnett** (decision 2).
-- Storage: **SQLite** via `better-sqlite3`. Indexed puzzle subset + attempt log.
+- Storage: build-time **SQLite** via Node's built-in `node:sqlite` (Node 24).
+  `better-sqlite3` is only a fallback if `node:sqlite` misbehaves — it needs
+  `node-gyp`, so avoid it. The browser never touches SQLite: it reads the
+  pre-built static JSON sets, and keeps the attempt log in IndexedDB.
 - Board interaction: click-to-move primary, drag as an enhancement.
 
 **Puzzle data pipeline (one-time, ~5 min)**
@@ -347,10 +350,23 @@ multi-user, and no sync** are needed — remove them from scope permanently.
   Themes, GameUrl, OpeningTags`.
 - Filter: `Rating` **800–1300** (narrowed from 600–1500 per decision 1 — he
   plays real games and loses to *basic* tactics, so the band sits low),
-  `Popularity` > 90, `NbPlays` > 200, `Themes` ∩ our motif list,
-  `oneMove`/`short` preferred at Tier 0–1.
-- Result: a few hundred thousand rows → SQLite, a few hundred MB. Indexed by
-  `(theme, rating_bucket, popularity)`.
+  `Popularity` > 90, `NbPlays` > 200, `Themes` ∩ our motif list.
+- **Move-count window per tier.** Solved by measurement, not taste. In the
+  filtered set, Lichess's `oneMove` tag is exactly the 2-ply puzzles
+  (194,195 rows, 100% in both directions) and `short` is exactly the 4-ply
+  ones, so ply count subsumes both tags. A 6-year-old must never be handed a
+  forced single move at Tier 1, but *is* meant to be handed one at Tier 0.
+  - **Tier 0 — 2–4 plies.** `takeTheFreePiece` genuinely *is* one move.
+  - **Tier 1 — 4–6 plies.** Excludes all 194k `oneMove` giveaways. Two moves
+    is recognition; three is the edge of his band.
+  - **Tier 2 — 4–8.** Tier 3 — 6+.
+  - A window, not just a floor: 8+ ply is real calculation and belongs to
+    Tier 3, not a frustrated Tier 1 session.
+- Every puzzle that reaches a set is re-verified as playable from its own FEN.
+  That is free at 90 puzzles and was only sampled 1-in-50 at import.
+- Result: a few hundred thousand rows → SQLite. Indexed by
+  `(theme, rating_bucket, popularity)`. Measured: 6,100,953 rows in → 736,331
+  kept. Zero unplayable solutions in a 1-in-50 sample.
 
 **Why not the Lichess puzzle API** — this was researched and is decisive:
 - `GET /api/puzzle/next` and `/api/puzzle/batch/{angle}` require OAuth
