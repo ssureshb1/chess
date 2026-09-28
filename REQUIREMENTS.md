@@ -392,6 +392,32 @@ multi-user, and no sync** are needed — remove them from scope permanently.
   (`src/chunks/curatedPuzzles.ts`), checked in beside the hand-authored
   counter-examples and held to the same predicates by the same tests. The other
   four are mined, and have 100–1000× more candidates than the 15 each set needs.
+
+  The 30 curated puzzles were not hand-typed. Each was found by enumerating the
+  legal moves of a bare position and keeping the ones that are checkmate, then
+  re-verified. Two rules came out of building them:
+  - **The two sets share no position and no piece.** `queenMate` owns every
+    queen mate, so `backRankMate` is rook-only; otherwise a single board would
+    appear in two sets with two different names.
+  - **No answer repeats more than twice in a set.** An early draft was fifteen
+    puzzles whose answer was all `Ra8#`, which teaches one trick rather than
+    "find the back rank". A test now fails the build if any answer appears three
+    times or if a set has fewer than five distinct answers.
+
+  A curated puzzle has no Lichess rating, so its `rating` is a **synthetic
+  difficulty ladder** (800 → 1150, rising with index) used only by the parent
+  dashboard, exactly as §7 requires of ratings. It is labelled as synthetic in
+  the source rather than being passed off as a real rating.
+
+  Because a mating line is 1 ply, the two curated chunks report a **1–1 ply
+  window** in the manifest instead of the tier window, rather than pretending a
+  1-ply line falls inside a 2–4 ply window.
+
+  Side note found while authoring: a rank-1 "back rank" mate of a *black* king
+  does not work, because black pawns on rank 2 can interpose on rank 1. Pawns on
+  rank 7 can never reach rank 8, so the rank-8 pattern is the real one — and the
+  rank-1 version only works when a *black* rook mates a *white* king. Both
+  chunks are built from the ranks where the pattern is actually sound.
 - Every puzzle that reaches a set is re-verified as playable from its own FEN.
   That is free at 90 puzzles and was only sampled 1-in-50 at import.
 - Result: a few hundred thousand rows → SQLite. Indexed by

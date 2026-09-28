@@ -1,7 +1,17 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
-import { parseSolution, plyWindowForTier, requiredThemesFor } from '../scripts/set-selection'
-import { nonMoverKingIsInCheck, replaySolution } from '../scripts/set-selection'
+import {
+  firstMoveContext,
+  isHandAuthoredChunkId,
+  nonMoverKingIsInCheck,
+  parseSolution,
+  motifPredicateFor,
+  plyWindowForChunk,
+  replaySolution,
+  requiredThemesFor,
+  type CuratedHandAuthoredChunkId,
+} from '../scripts/set-selection'
+import { CURATED_MATE_PUZZLES } from '../src/chunks/curatedPuzzles'
 
 import { curriculum } from '../src/chunks/curriculum'
 import type { ChunkId, ChunkTier } from '../src/chunks/schema'
@@ -68,7 +78,7 @@ for (const entry of manifest.sets) {
   check(set.chunkId === entry.chunkId, `${entry.chunkId}: chunkId mismatch`)
   check(set.tier === chunk.tier, `${entry.chunkId}: tier ${set.tier} != curriculum ${chunk.tier}`)
 
-  const window = plyWindowForTier(chunk.tier)
+  const window = plyWindowForChunk(chunk.id, chunk.tier)
   check(set.minPlies === window.minPlies, `${entry.chunkId}: minPlies ${set.minPlies}`)
   check(set.maxPlies === window.maxPlies, `${entry.chunkId}: maxPlies ${set.maxPlies}`)
   check(entry.minPlies === window.minPlies, `${entry.chunkId}: manifest minPlies`)
@@ -97,20 +107,40 @@ for (const entry of manifest.sets) {
   for (const puzzle of all) {
     const label = `${entry.chunkId}/${puzzle.id}`
 
-    const row = db
-      .prepare('SELECT fen, moves, rating, popularity, move_count FROM puzzles WHERE id = ?')
-      .get(puzzle.id) as
-      | { fen: string; moves: string; rating: number; popularity: number; move_count: number }
-      | undefined
-    if (row === undefined) {
-      failures.push(`${label}: not present in data/puzzles.db`)
-      continue
+    // A hand-authored puzzle has no database row, so it is checked against the
+    // curated source instead of the mine.
+    if (isHandAuthoredChunkId(entry.chunkId)) {
+      const curated = CURATED_MATE_PUZZLES[entry.chunkId as CuratedHandAuthoredChunkId].find(
+        (row) => row.id === puzzle.id,
+      )
+      if (curated === undefined) {
+        failures.push(`${label}: not present in src/chunks/curatedPuzzles.ts`)
+        continue
+      }
+      check(curated.fen === puzzle.fen, `${label}: fen differs from the curated source`)
+      check(curated.moves === puzzle.moves, `${label}: moves differ from the curated source`)
+      check(curated.rating === puzzle.rating, `${label}: rating differs from the curated source`)
+      check(
+        curated.popularity === puzzle.popularity,
+        `${label}: popularity differs from the curated source`,
+      )
+      check(curated.plies === puzzle.plies, `${label}: plies differs from the curated source`)
+    } else {
+      const row = db
+        .prepare('SELECT fen, moves, rating, popularity, move_count FROM puzzles WHERE id = ?')
+        .get(puzzle.id) as
+        | { fen: string; moves: string; rating: number; popularity: number; move_count: number }
+        | undefined
+      if (row === undefined) {
+        failures.push(`${label}: not present in data/puzzles.db`)
+        continue
+      }
+      check(row.fen === puzzle.fen, `${label}: fen differs from the database row`)
+      check(row.moves === puzzle.moves, `${label}: moves differ from the database row`)
+      check(row.rating === puzzle.rating, `${label}: rating differs from the database row`)
+      check(row.popularity === puzzle.popularity, `${label}: popularity differs from the database row`)
+      check(row.move_count === puzzle.plies, `${label}: plies differs from the database row`)
     }
-    check(row.fen === puzzle.fen, `${label}: fen differs from the database row`)
-    check(row.moves === puzzle.moves, `${label}: moves differ from the database row`)
-    check(row.rating === puzzle.rating, `${label}: rating differs from the database row`)
-    check(row.popularity === puzzle.popularity, `${label}: popularity differs from the database row`)
-    check(row.move_count === puzzle.plies, `${label}: plies differs from the database row`)
 
     check(
       puzzle.plies >= window.minPlies && puzzle.plies <= window.maxPlies,
@@ -131,18 +161,38 @@ for (const entry of manifest.sets) {
     const replayed = replaySolution(puzzle.fen, parseSolution(puzzle.moves))
     if (replayed === null) failures.push(`${label}: solution does not replay from its own FEN`)
 
-    const required = requiredThemesFor(entry.chunkId)
-    const themes: string[] = []
-    for (const themeRow of db
-      .prepare('SELECT theme FROM puzzle_themes WHERE puzzle_id = ?')
-      .iterate(puzzle.id)) {
-      const theme = themeRow['theme']
-      if (typeof theme === 'string') themes.push(theme)
+    // A mined puzzle has to carry a Lichess tag for its chunk; that tag is only
+    // a candidate filter, which is why the motif is checked separately below. A
+    // curated puzzle has no tags, so the motif is the whole requirement.
+    if (isHandAuthoredChunkId(entry.chunkId)) {
+      const predicate = motifPredicateFor(entry.chunkId)
+      const context = firstMoveContext(puzzle.fen, parseSolution(puzzle.moves))
+      check(
+        context !== null && predicate !== undefined && predicate(context),
+        `${label}: move 1 does not show the ${entry.chunkId} motif`,
+      )
+    } else {
+      const required = requiredThemesFor(entry.chunkId)
+      const themes: string[] = []
+      for (const themeRow of db
+        .prepare('SELECT theme FROM puzzle_themes WHERE puzzle_id = ?')
+        .iterate(puzzle.id)) {
+        const theme = themeRow['theme']
+        if (typeof theme === 'string') themes.push(theme)
+      }
+      check(
+        themes.some((theme) => (required as readonly string[]).includes(theme)),
+        `${label}: carries none of ${required.join('/')} (has ${themes.join(' ')})`,
+      )
+      const predicate = motifPredicateFor(entry.chunkId)
+      const context = firstMoveContext(puzzle.fen, parseSolution(puzzle.moves))
+      if (predicate !== undefined) {
+        check(
+          context !== null && predicate(context),
+          `${label}: move 1 does not show the ${entry.chunkId} motif`,
+        )
+      }
     }
-    check(
-      themes.some((theme) => (required as readonly string[]).includes(theme)),
-      `${label}: carries none of ${required.join('/')} (has ${themes.join(' ')})`,
-    )
 
     pliesLo = Math.min(pliesLo, puzzle.plies)
     pliesHi = Math.max(pliesHi, puzzle.plies)

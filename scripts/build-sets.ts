@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite'
 import { argv, exit } from 'node:process'
 import { curriculum } from '../src/chunks/curriculum'
+import { CURATED_MATE_PUZZLES } from '../src/chunks/curatedPuzzles'
 import type { Chunk, ChunkId, ChunkTier } from '../src/chunks/schema'
 import { IMPORT, puzzleDbPath, ratingBucket, type MotifTheme } from './puzzle-filter'
 import {
@@ -11,14 +12,17 @@ import {
   TRANSFER_PER_SET,
   emptyRejectionCounts,
   isCuratedChunkId,
+  isHandAuthoredChunkId,
   nonMoverKingIsInCheck,
   parseSolution,
-  plyWindowForTier,
+  plyWindowForChunk,
   replaySolution,
   requiredThemesFor,
   selectChunkSet,
-  type Candidate,
+  selectCuratedChunkSet,
+  type CuratedHandAuthoredChunkId,
   type RejectionCounts,
+  type Candidate,
   type RejectionReason,
   type Selection,
   type SetPuzzle,
@@ -272,21 +276,46 @@ function main(): void {
   let candidatesScanned = 0
 
   for (const chunk of selected) {
-    const window = plyWindowForTier(chunk.tier)
-    const themes = [...requiredThemesFor(chunk.id)]
-    const pool = countPool(db, themes, window.minPlies, window.maxPlies)
-    const candidates = loadCandidates(db, themes, window.minPlies, window.maxPlies)
+    const window = plyWindowForChunk(chunk.id, chunk.tier)
+    const curated = isHandAuthoredChunkId(chunk.id)
+    const puzzles = curated ? CURATED_MATE_PUZZLES[chunk.id as CuratedHandAuthoredChunkId] : []
 
-    const selection = selectChunkSet({
-      chunkId: chunk.id,
-      tier: chunk.tier,
-      window,
-      requiredThemes: themes,
-      candidates,
-      claimedIds,
-      drilledCount: DRILLED_PER_SET,
-      transferCount: TRANSFER_PER_SET,
-    })
+    // The pool report describes where a set's puzzles came from: the mine for a
+    // mined chunk, the hand-authored list for the two mate chunks.
+    const pool = curated
+      ? { total: puzzles.length, inWindow: puzzles.length }
+      : countPool(db, [...requiredThemesFor(chunk.id)], window.minPlies, window.maxPlies)
+    const candidates: Candidate[] = curated
+      ? puzzles.map((puzzle) => ({
+          id: puzzle.id,
+          fen: puzzle.fen,
+          moves: puzzle.moves,
+          rating: puzzle.rating,
+          popularity: puzzle.popularity,
+          plies: puzzle.plies,
+          themes: [],
+        }))
+      : loadCandidates(db, [...requiredThemesFor(chunk.id)], window.minPlies, window.maxPlies)
+
+    const selection = curated
+      ? selectCuratedChunkSet({
+          chunkId: chunk.id as CuratedHandAuthoredChunkId,
+          tier: chunk.tier,
+          puzzles,
+          claimedIds,
+          drilledCount: DRILLED_PER_SET,
+          transferCount: TRANSFER_PER_SET,
+        }).selection
+      : selectChunkSet({
+          chunkId: chunk.id,
+          tier: chunk.tier,
+          window,
+          requiredThemes: [...requiredThemesFor(chunk.id)],
+          candidates,
+          claimedIds,
+          drilledCount: DRILLED_PER_SET,
+          transferCount: TRANSFER_PER_SET,
+        })
     assertRejectionsMatchSelection(selection.rejections)
 
     if (!selection.complete) {

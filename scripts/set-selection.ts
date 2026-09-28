@@ -12,6 +12,7 @@ import {
   type PieceSymbol,
   type UciMove,
 } from '../src/chess/types'
+import type { CuratedPuzzle } from '../src/chunks/curatedPuzzleTypes'
 import { IMPORT, ratingBucket, type MotifTheme } from './puzzle-filter'
 
 export type PlyWindow = {
@@ -331,6 +332,24 @@ export function checksButIsNotMate(context: MotifContext): boolean {
   return context.after.isInCheck() && !context.after.isCheckmate()
 }
 
+// The mated king has to be on its own back rank, and the checking piece has to
+// be the one that owns the back-rank idea. A queen mate on the back rank is
+// still a back-rank mate, so this predicate does not care which piece gave it;
+// the curated set just happens to be rook-only so it does not repeat
+// `queenMate`.
+export function backRankMatesOnFirstMove(context: MotifContext): boolean {
+  if (!context.after.isCheckmate()) return false
+  const mated = context.after.turn()
+  const king = context.after.findPiece('k', mated)[0]
+  if (king === undefined) return false
+  const rank = rankOf(king)
+  return rank === '1' || rank === '8'
+}
+
+export function queenMatesOnFirstMove(context: MotifContext): boolean {
+  return context.move.piece === 'q' && context.after.isCheckmate()
+}
+
 export const CHUNK_MOTIF_PREDICATES: Readonly<
   Partial<Record<ChunkId, (context: MotifContext) => boolean>>
 > = {
@@ -338,14 +357,28 @@ export const CHUNK_MOTIF_PREDICATES: Readonly<
   hangingPiece: takesFreePiece,
   knightFork: knightForksTwoPieces,
   checkIsNotMate: checksButIsNotMate,
+  queenMate: queenMatesOnFirstMove,
+  backRankMate: backRankMatesOnFirstMove,
 }
 
-// `queenMate` and `backRankMate` are deliberately absent: Lichess emits no 1-ply
-// puzzles, so a mating first move — which ends the game — cannot be expressed in
-// the dump at all. Those two chunks are hand-authored in
-// `src/chunks/curatedPuzzles.ts` and held to the same predicates by the same
-// tests.
+// `queenMate` and `backRankMate` have predicates but are never mined: Lichess
+// emits no 1-ply puzzles, and a mating first move ends the game, so the motif
+// cannot appear in a 2- or 4-ply line at all. Scanning every legal move of
+// 9,000 mateIn1-tagged positions found a mating move in 0.0% of them. Those two
+// chunks are hand-authored in `src/chunks/curatedPuzzles.ts` and held to the
+// same predicates by the same tests.
 export const HAND_AUTHORED_CHUNK_IDS = ['queenMate', 'backRankMate'] as const
+
+export function isHandAuthoredChunkId(chunkId: ChunkId): boolean {
+  return (HAND_AUTHORED_CHUNK_IDS as readonly ChunkId[]).includes(chunkId)
+}
+
+// A hand-authored mating puzzle is 1 ply, so the mined tier windows do not
+// describe it. Reporting 1-1 keeps the manifest and the verifier honest instead
+// of pretending a 1-ply line falls inside a 2-4 ply window.
+export function plyWindowForChunk(chunkId: ChunkId, tier: ChunkTier): PlyWindow {
+  return isHandAuthoredChunkId(chunkId) ? { minPlies: 1, maxPlies: 1 } : plyWindowForTier(tier)
+}
 
 export function motifPredicateFor(chunkId: ChunkId): ((context: MotifContext) => boolean) | undefined {
   return CHUNK_MOTIF_PREDICATES[chunkId]
@@ -394,6 +427,11 @@ function toSetPuzzle(candidate: Candidate): SetPuzzle {
   }
 }
 export function selectChunkSet(request: SelectionRequest): Selection {
+  if (isHandAuthoredChunkId(request.chunkId)) {
+    throw new Error(
+      `"${request.chunkId}" is hand-authored and has no mineable pool; use selectCuratedChunkSet`,
+    )
+  }
   const rejected = emptyRejectionCounts()
   const claimedIds = new Set(request.claimedIds)
   const picked = new Set<string>()
@@ -521,5 +559,118 @@ export function selectChunkSet(request: SelectionRequest): Selection {
     scanned,
     claimedIds,
     complete: drilled.length === request.drilledCount && transfer.length === request.transferCount,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hand-authored chunks
+//
+// `queenMate` and `backRankMate` cannot be mined: a mating first move ends the
+// game, so the line is 1 ply and the dump contains no 1-ply lines. Rather than
+// ship a tag-matched set that does not drill the chunk, the puzzles are authored
+// in `src/chunks/curatedPuzzles.ts` and put through the same gates as mined
+// candidates: legal, replayable, the side not to move is not already in check,
+// and move 1 satisfies the chunk's motif predicate.
+// ---------------------------------------------------------------------------
+
+export type CuratedSelectionRequest = {
+  readonly chunkId: CuratedHandAuthoredChunkId
+  readonly tier: ChunkTier
+  readonly puzzles: readonly CuratedPuzzle[]
+  readonly claimedIds: ReadonlySet<string>
+  readonly drilledCount: number
+  readonly transferCount: number
+}
+
+export type CuratedHandAuthoredChunkId = (typeof HAND_AUTHORED_CHUNK_IDS)[number]
+
+export type CuratedRejection = {
+  readonly id: string
+  readonly reason: RejectionReason
+}
+
+export function selectCuratedChunkSet(request: CuratedSelectionRequest): {
+  readonly selection: Selection
+  readonly rejected: readonly CuratedRejection[]
+} {
+  const rejected: CuratedRejection[] = []
+  const claimedIds = new Set(request.claimedIds)
+  const picked = new Set<string>()
+  const accepted: SetPuzzle[] = []
+  const predicate = motifPredicateFor(request.chunkId)
+  if (predicate === undefined) {
+    throw new Error(`No motif predicate registered for "${request.chunkId}"`)
+  }
+  const window = plyWindowForChunk(request.chunkId, request.tier)
+
+  for (const puzzle of request.puzzles) {
+    const reject = (reason: RejectionReason): void => {
+      rejected.push({ id: puzzle.id, reason })
+    }
+
+    if (claimedIds.has(puzzle.id) || picked.has(puzzle.id)) {
+      reject('duplicateWithinSet')
+      continue
+    }
+    if (puzzle.plies < window.minPlies || puzzle.plies > window.maxPlies) {
+      reject('outsidePlyWindow')
+      continue
+    }
+    const context = firstMoveContext(puzzle.fen, parseSolution(puzzle.moves))
+    if (context === null) {
+      reject('notReplayable')
+      continue
+    }
+    if (parseSolution(puzzle.moves).length !== puzzle.plies) {
+      reject('notReplayable')
+      continue
+    }
+    if (nonMoverKingIsInCheck(context.before)) {
+      reject('opponentAlreadyInCheck')
+      continue
+    }
+    const moves = parseSolution(puzzle.moves)
+    if (!predicate(context)) {
+      reject('motifNotOnFirstMove')
+      continue
+    }
+    if (replaySolution(puzzle.fen, moves) === null) {
+      reject('notReplayable')
+      continue
+    }
+
+    picked.add(puzzle.id)
+    claimedIds.add(puzzle.id)
+    accepted.push({
+      id: puzzle.id,
+      fen: puzzle.fen,
+      moves: puzzle.moves,
+      rating: puzzle.rating,
+      popularity: puzzle.popularity,
+      plies: puzzle.plies,
+    })
+  }
+
+  const wanted = request.drilledCount + request.transferCount
+  if (accepted.length < wanted) {
+    throw new Error(
+      `"${request.chunkId}" has ${accepted.length}/${wanted} usable curated puzzles: ` +
+        rejected.map((entry) => `${entry.id}:${entry.reason}`).join(', '),
+    )
+  }
+
+  return {
+    selection: {
+      chunkId: request.chunkId,
+      tier: request.tier,
+      window,
+      drilled: accepted.slice(0, request.drilledCount),
+      transfer: accepted.slice(request.drilledCount, wanted),
+      rejections: emptyRejectionCounts(),
+      scanned: request.puzzles.length,
+      claimedIds,
+      complete: true,
+    },
+    rejected,
   }
 }

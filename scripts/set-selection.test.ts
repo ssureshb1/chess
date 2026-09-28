@@ -12,12 +12,14 @@ import {
   bucketHasRoom,
   ratingBucketQuotas,
   emptyRejectionCounts,
+  backRankMatesOnFirstMove,
   checksButIsNotMate,
   firstMoveContext,
   firstMoveIsTrivialRecapture,
   HAND_AUTHORED_CHUNK_IDS,
   knightForksTwoPieces,
   motifPredicateFor,
+  queenMatesOnFirstMove,
   hasRequiredTheme,
   isSolutionPlayable,
   isTrivialRecapture,
@@ -409,9 +411,32 @@ describe('move-1 motif predicates', () => {
     expect(checksButIsNotMate(context('4k3/8/8/8/8/8/8/4K3 w - - 0 1', 'e1e2'))).toBe(false)
   })
 
-  it('leaves the two hand-authored mate chunks without a mined predicate', () => {
-    expect(motifPredicateFor('queenMate')).toBeUndefined()
-    expect(motifPredicateFor('backRankMate')).toBeUndefined()
+  it('separates a queen mate from a back-rank mate', () => {
+    // A queen mate that is also a back-rank mate is only a queen mate.
+    expect(queenMatesOnFirstMove(context('7k/6pp/8/8/8/8/8/Q3K3 w - - 0 1', 'a1a8'))).toBe(true)
+    expect(backRankMatesOnFirstMove(context('7k/6pp/8/8/8/8/8/Q3K3 w - - 0 1', 'a1a8'))).toBe(true)
+    // A rook back-rank mate is not a queen mate.
+    expect(queenMatesOnFirstMove(context('7k/6pp/8/8/8/8/8/R3K3 w - - 0 1', 'a1a8'))).toBe(false)
+    expect(backRankMatesOnFirstMove(context('7k/6pp/8/8/8/8/8/R3K3 w - - 0 1', 'a1a8'))).toBe(true)
+    // Mated in the middle of the board: checkmate, but not a back rank.
+    expect(backRankMatesOnFirstMove(context('4k3/8/8/8/8/8/8/R3K3 w - - 0 1', 'a1a8'))).toBe(false)
+  })
+
+  it('keeps the two hand-authored chunks out of the mined path', () => {
+    expect(motifPredicateFor('queenMate')).toBe(queenMatesOnFirstMove)
+    expect(motifPredicateFor('backRankMate')).toBe(backRankMatesOnFirstMove)
     expect([...HAND_AUTHORED_CHUNK_IDS].sort()).toEqual(['backRankMate', 'queenMate'])
+    expect(() =>
+      selectChunkSet({
+        chunkId: 'queenMate',
+        tier: 0,
+        window: { minPlies: 2, maxPlies: 4 },
+        requiredThemes: ['mateIn1'],
+        candidates: [],
+        claimedIds: new Set<string>(),
+        drilledCount: 1,
+        transferCount: 0,
+      }),
+    ).toThrow(/hand-authored/)
   })
 })
