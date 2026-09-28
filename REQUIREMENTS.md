@@ -362,6 +362,36 @@ multi-user, and no sync** are needed — remove them from scope permanently.
   - **Tier 2 — 4–8.** Tier 3 — 6+.
   - A window, not just a floor: 8+ ply is real calculation and belongs to
     Tier 3, not a frustrated Tier 1 session.
+- **The motif must be on move 1, verified — never inferred from the theme
+  tag.** This is the most important lesson in the pipeline, and it was learned
+  the expensive way. Lichess theme tags describe features *present in a
+  position*, not the shape of its *solution*. Row `0082f` is tagged `mateIn1`
+  but its first move is `axb3`, a pawn capture with no check and no mate; the
+  mate is the opponent's move on ply 2. The tags are also mechanically tied to
+  ply count — `mateIn1` ⟺ exactly 2 plies, `mateIn2` ⟺ exactly 4 — so the
+  motif always lands on the **last** ply. A solver only ever plays move 1, so
+  tag-based selection cannot be trusted to put the motif in front of him.
+
+  Every selected puzzle is therefore checked against a per-chunk **move-1 motif
+  predicate**, and rejected if it fails. Measured yield of those predicates:
+
+  | chunk | move-1 test | pool | pass |
+  |---|---|---|---|
+  | `hangingPiece` | captures an undefended piece | 23,026 | 46.8% |
+  | `takeTheFreePiece` | captures an undefended piece | 24,731 | 40.0% |
+  | `knightFork` | a knight move hitting 2 pieces | 158,892 | 4.8% |
+  | `checkIsNotMate` | gives check but is not mate | 397,154 | 0.32% |
+  | `queenMate` | mate by the queen | 397,154 | 0.00% |
+  | `backRankMate` | mates a king on its back rank | 29,580 | 0.00% |
+
+  The two zeros are **structural, not a bug**: Lichess emits no 1-ply puzzles.
+  A mating first move ends the game, so the line would be one ply, and those do
+  not exist in the dump. The side to move in a `mateIn1`-tagged position is the
+  one *being* mated — scanning every legal move of 9,000 such positions found a
+  mating move in 0.0% of them. So the two mate chunks are **hand-authored**
+  (`src/chunks/curatedPuzzles.ts`), checked in beside the hand-authored
+  counter-examples and held to the same predicates by the same tests. The other
+  four are mined, and have 100–1000× more candidates than the 15 each set needs.
 - Every puzzle that reaches a set is re-verified as playable from its own FEN.
   That is free at 90 puzzles and was only sampled 1-in-50 at import.
 - Result: a few hundred thousand rows → SQLite. Indexed by

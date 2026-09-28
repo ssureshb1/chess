@@ -7,7 +7,6 @@ import { IMPORT, puzzleDbPath, ratingBucket, type MotifTheme } from './puzzle-fi
 import {
   CHUNK_THEME_REQUIREMENTS,
   DRILLED_PER_SET,
-  MAX_DRILLED_PER_RATING_BUCKET,
   REJECTION_REASONS,
   TRANSFER_PER_SET,
   emptyRejectionCounts,
@@ -26,7 +25,11 @@ import {
 } from './set-selection'
 
 const SET_FILE_VERSION = 1
-const CANDIDATES_PER_RATING_BUCKET = 16
+// A motif predicate can reject almost everything: `checkIsNotMate` keeps about
+// 0.3% of its pool, so a thin fetch starves it. 2000 per rating bucket is a
+// 10,000-candidate window, which clears the 15 needed even at that yield while
+// staying fast enough to re-verify every candidate.
+const CANDIDATES_PER_RATING_BUCKET = 2000
 const DEFAULT_OUT_DIR = 'public/sets'
 
 // REQUIREMENTS.md §7: puzzle rating is for the parent dashboard only and must
@@ -283,7 +286,6 @@ function main(): void {
       claimedIds,
       drilledCount: DRILLED_PER_SET,
       transferCount: TRANSFER_PER_SET,
-      maxPerRatingBucket: MAX_DRILLED_PER_RATING_BUCKET,
     })
     assertRejectionsMatchSelection(selection.rejections)
 

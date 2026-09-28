@@ -6,12 +6,18 @@ import { ratingBucket } from './puzzle-filter'
 import {
   CHUNK_THEME_REQUIREMENTS,
   DRILLED_PER_SET,
-  MAX_DRILLED_PER_RATING_BUCKET,
+  DRILLED_PER_SET as DRILLED,
   TIER_PLY_WINDOWS,
   TRANSFER_PER_SET,
-  bucketWithinLimit,
+  bucketHasRoom,
+  ratingBucketQuotas,
   emptyRejectionCounts,
+  checksButIsNotMate,
+  firstMoveContext,
   firstMoveIsTrivialRecapture,
+  HAND_AUTHORED_CHUNK_IDS,
+  knightForksTwoPieces,
+  motifPredicateFor,
   hasRequiredTheme,
   isSolutionPlayable,
   isTrivialRecapture,
@@ -23,13 +29,17 @@ import {
   replaySolution,
   requiredThemesFor,
   selectChunkSet,
+  takesFreePiece,
   withinPlyWindow,
   type Candidate,
   type PlyTier,
   type Selection,
 } from './set-selection'
 
-const ELOCHKA_FEN = '4k3/8/8/8/8/4N3/8/4K3 w - - 0 1'
+// A real knight fork: Nb5-c7+ hits the e8 king and the a8 rook, so the
+// default fixture satisfies the `knightFork` move-1 motif predicate.
+const ELOCHKA_FEN = 'r3k3/8/8/1N6/8/8/8/4K3 w - - 0 1'
+const ELOCHKA_MOVES = 'b5c7 e8d8 e1f1 d8c8'
 const LOOSE_PAWN_RECAPTURE_FEN = '4k3/8/8/2n5/3P4/8/8/4K3 w - - 0 1'
 const LOOSE_PAWN_RECAPTURE_MOVES = 'd4c5 e8d7'
 const BLACK_KING_ALREADY_IN_CHECK_FEN = '4k3/8/8/8/8/8/4R3/4K3 w - - 0 1'
@@ -38,7 +48,7 @@ const BLACK_KING_ALREADY_IN_CHECK_MOVES = 'e2f2 e8d7'
 function candidate(overrides: Partial<Candidate> & { readonly id: string }): Candidate {
   return {
     fen: ELOCHKA_FEN,
-    moves: 'e3d5 e8d7',
+    moves: ELOCHKA_MOVES,
     rating: 1000,
     popularity: 100,
     plies: 4,
@@ -60,7 +70,6 @@ function fill(overrides: Partial<Parameters<typeof selectChunkSet>[0]> = {}): Se
     claimedIds: new Set<string>(),
     drilledCount: DRILLED_PER_SET,
     transferCount: TRANSFER_PER_SET,
-    maxPerRatingBucket: MAX_DRILLED_PER_RATING_BUCKET,
     ...overrides,
   })
 }
@@ -189,12 +198,32 @@ describe('candidate ordering', () => {
   })
 })
 
-describe('rating bucket balance', () => {
-  it('blocks a bucket at the per-bucket cap and leaves the others open', () => {
-    const buckets = new Map([[8, 6]])
-    expect(bucketWithinLimit(buckets, 850, 6)).toBe(false)
-    expect(bucketWithinLimit(buckets, 950, 6)).toBe(true)
-    expect(bucketWithinLimit(buckets, 1300, 6)).toBe(true)
+describe('rating bucket quotas', () => {
+  it('apportions the 800-1300 band so the low end carries the set', () => {
+    const quotas = ratingBucketQuotas(12)
+    expect(Object.fromEntries(quotas)).toEqual({ 8: 4, 9: 4, 10: 2, 11: 1, 12: 1 })
+  })
+
+  it('always sums to the drilled count and stays deterministic', () => {
+    for (const count of [1, 5, 12, 13, 30]) {
+      const first = ratingBucketQuotas(count)
+      const second = ratingBucketQuotas(count)
+      expect(Object.fromEntries(first)).toEqual(Object.fromEntries(second))
+      const total = [...first.values()].reduce((sum, value) => sum + value, 0)
+      expect(total).toBe(count)
+    }
+  })
+
+  it('returns no quotas for an empty set', () => {
+    expect(ratingBucketQuotas(0).size).toBe(0)
+  })
+
+  it('blocks a bucket once its quota is used up and leaves the others open', () => {
+    const quotas = ratingBucketQuotas(12)
+    const used = new Map([[8, 4]])
+    expect(bucketHasRoom(quotas, used, 850)).toBe(false)
+    expect(bucketHasRoom(quotas, used, 950)).toBe(true)
+    expect(bucketHasRoom(quotas, new Map(), 1250)).toBe(true)
   })
 
   it('groups ratings into 100-wide buckets', () => {
@@ -204,10 +233,10 @@ describe('rating bucket balance', () => {
     expect(ratingBucket(1299)).toBe(12)
   })
 
-  it('fills at most six drilled puzzles per rating bucket', () => {
+  it('spreads a set across the whole band instead of pinning it to 800-900', () => {
     const selection = fill({
-      candidates: Array.from({ length: 40 }, (_, index) =>
-        candidate({ id: `spread${String(index).padStart(2, '0')}`, rating: 800 + index * 5 }),
+      candidates: Array.from({ length: 400 }, (_, index) =>
+        candidate({ id: `spread${String(index).padStart(3, '0')}`, rating: 800 + ((index * 7) % 500) }),
       ),
     })
     const counts = new Map<number, number>()
@@ -216,30 +245,29 @@ describe('rating bucket balance', () => {
       counts.set(bucket, (counts.get(bucket) ?? 0) + 1)
     }
     expect(selection.complete).toBe(true)
-    expect(selection.drilled.length).toBe(DRILLED_PER_SET)
-    expect([...counts.values()].sort()).toEqual([6, 6])
-    expect(selection.rejections.ratingBucketFull).toBe(14)
+    expect(selection.drilled.length).toBe(DRILLED)
+    expect(Object.fromEntries(counts)).toEqual({ 8: 4, 9: 4, 10: 2, 11: 1, 12: 1 })
   })
 
-  it('stops short rather than piling one rating bucket past the cap', () => {
+  it('still fills every slot when one bucket runs dry', () => {
     const selection = fill({
-      candidates: Array.from({ length: 30 }, (_, index) =>
-        candidate({ id: `oneBucket${String(index).padStart(2, '0')}`, rating: 800 + index }),
+      candidates: Array.from({ length: 60 }, (_, index) =>
+        candidate({ id: `lowOnly${String(index).padStart(3, '0')}`, rating: 800 + (index % 100) }),
       ),
     })
-    expect(selection.complete).toBe(false)
-    expect(selection.drilled.length).toBe(MAX_DRILLED_PER_RATING_BUCKET)
+    expect(selection.complete).toBe(true)
+    expect(selection.drilled.length).toBe(DRILLED)
   })
 })
 
 describe('replay and illegal-position checks', () => {
   it('replays a real solution and keeps the mover side in check only as given', () => {
-    expect(isSolutionPlayable(ELOCHKA_FEN, parseSolution('e3d5 e8d7'))).toBe(true)
+    expect(isSolutionPlayable(ELOCHKA_FEN, parseSolution(ELOCHKA_MOVES))).toBe(true)
   })
 
   it('rejects a solution that is not legal from its own FEN', () => {
-    expect(isSolutionPlayable(ELOCHKA_FEN, parseSolution('a1a2 e8d7'))).toBe(false)
-    expect(replaySolution('this is not a fen', parseSolution('e3d5'))).toBeNull()
+    expect(isSolutionPlayable(ELOCHKA_FEN, parseSolution('a1a2 e8d8'))).toBe(false)
+    expect(replaySolution('this is not a fen', parseSolution(ELOCHKA_MOVES))).toBeNull()
   })
 
   it('rejects a position where the side not to move is already in check', () => {
@@ -253,7 +281,7 @@ describe('replay and illegal-position checks', () => {
   })
 
   it('accepts a position where the side not to move is safe', () => {
-    const position = replaySolution(ELOCHKA_FEN, parseSolution('e3d5 e8d7'))
+    const position = replaySolution(ELOCHKA_FEN, parseSolution(ELOCHKA_MOVES))
     expect(position === null ? true : nonMoverKingIsInCheck(position)).toBe(false)
   })
 })
@@ -302,7 +330,7 @@ describe('selectChunkSet', () => {
     expect(selection.rejections.trivialRecapture).toBe(1)
     const totalRejected = Object.values(selection.rejections).reduce((sum, count) => sum + count, 0)
     expect(selection.scanned).toBe(selection.drilled.length + selection.transfer.length + totalRejected)
-    expect(selection.scanned).toBe(24)
+    expect(selection.scanned).toBe(35)
   })
 
   it('reports an incomplete set rather than padding a thin pool', () => {
@@ -334,6 +362,56 @@ describe('helpers', () => {
   it('builds a Position from an emitted FEN', () => {
     const position = new Position(asFen(ELOCHKA_FEN))
     expect(position.turn()).toBe('w')
-    expect(position.pieceAt(asPieceSquare('e3'))).not.toBeNull()
+    expect(position.pieceAt(asPieceSquare('b5'))).not.toBeNull()
+  })
+})
+
+describe('move-1 motif predicates', () => {
+  function context(fen: string, moves: string) {
+    const made = firstMoveContext(fen, parseSolution(moves))
+    expect(made, `${fen} / ${moves}`).not.toBeNull()
+    if (made === null) throw new Error('unreachable')
+    return made
+  }
+
+  it('accepts capturing a piece nothing defends and rejects a defended one', () => {
+    // Nxd5 on a loose queen, then the same capture with a black pawn on e6
+    // covering d5.
+    expect(takesFreePiece(context('4k3/8/8/3q4/8/4N3/8/4K3 w - - 0 1', 'e3d5'))).toBe(true)
+    expect(takesFreePiece(context('4k3/8/4p3/3q4/8/4N3/8/4K3 w - - 0 1', 'e3d5'))).toBe(false)
+  })
+
+  it('rejects a first move that captures nothing', () => {
+    expect(takesFreePiece(context(ELOCHKA_FEN, ELOCHKA_MOVES))).toBe(false)
+  })
+
+  it('accepts a knight move hitting the king and one more piece', () => {
+    expect(knightForksTwoPieces(context(ELOCHKA_FEN, ELOCHKA_MOVES))).toBe(true)
+  })
+
+  it('accepts a knight move hitting two pieces with no check', () => {
+    // Nc7 hits the a6 rook and the b5 knight, and the h8 king is nowhere near.
+    expect(knightForksTwoPieces(context('7k/8/r7/1n1N4/8/8/8/7K w - - 0 1', 'd5c7'))).toBe(true)
+  })
+
+  it('rejects a knight move that only hits one piece', () => {
+    expect(knightForksTwoPieces(context('7k/8/8/1n1N4/8/8/8/7K w - - 0 1', 'd5c7'))).toBe(false)
+  })
+
+  it('rejects a non-knight move even when it attacks two pieces', () => {
+    // Bxc5 also hits two black knights, but a bishop is not a fork.
+    expect(knightForksTwoPieces(context('7k/8/8/2n1n3/3B4/8/8/7K w - - 0 1', 'd4c5'))).toBe(false)
+  })
+
+  it('separates check from mate for the checkIsNotMate chunk', () => {
+    expect(checksButIsNotMate(context('6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1', 'a1a8'))).toBe(false)
+    expect(checksButIsNotMate(context(ELOCHKA_FEN, ELOCHKA_MOVES))).toBe(true)
+    expect(checksButIsNotMate(context('4k3/8/8/8/8/8/8/4K3 w - - 0 1', 'e1e2'))).toBe(false)
+  })
+
+  it('leaves the two hand-authored mate chunks without a mined predicate', () => {
+    expect(motifPredicateFor('queenMate')).toBeUndefined()
+    expect(motifPredicateFor('backRankMate')).toBeUndefined()
+    expect([...HAND_AUTHORED_CHUNK_IDS].sort()).toEqual(['backRankMate', 'queenMate'])
   })
 })
