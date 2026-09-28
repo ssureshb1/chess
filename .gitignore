@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Large generated data — regenerate via scripts/import-puzzles.ts
+# NEVER commit the 304MB Lichess dump or the built SQLite file.
+data/
+
+# Generated puzzle sets — rebuild via scripts/build-sets.ts
+# (Small enough to commit if that ever makes the repo self-contained;
+#  default is to keep generated artifacts out of history.)
+public/sets/
+
+# Secrets — the Lichess Personal Access Token lives in .env.local
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Editors
+.vscode/
+.idea/
+*.swp
